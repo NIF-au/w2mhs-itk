@@ -65,6 +65,8 @@
 #include "vector"
 #include "unistd.h"
 #include "getopt.h"
+#include "vector"
+
 
 //BOOST
 #include "boost/math/distributions/students_t.hpp"
@@ -82,6 +84,7 @@ typedef itk::Image<float,3> ImageType;
 typedef ImageType::Pointer ImagePointer;
 typedef itk::Image<float,2> ImageType2D;
 typedef ImageType2D::Pointer ImagePointer2D;
+typedef std::pair <std::vector<double>, std::vector<double> > vecPair; 
 
 //FILTER, ETC TYPES
 typedef itk::MaskImageFilter< ImageType, ImageType > MaskFilterType;
@@ -111,7 +114,6 @@ ImagePointer InvertImage(ImagePointer input, int maximum);
 double GetHistogramMax(ImagePointer inputImage,unsigned int binsCount);
 ImagePointer ThresholdImage(ImagePointer input, float lowerThreshold, float upperThreshold);
 ImagePointer2D BinarizeThresholdedImage(ImagePointer2D input2D, float lowerThreshold, float upperThreshold);
-
 ImagePointer2D Get2DBinaryObjectsBoundaries(ImagePointer2D input);
 ImagePointer2D Get2DSlice(ImagePointer input3D,int plane, int slice);
 std::vector<ImageType2D::IndexType> FindIndicesByIntensity(ImagePointer2D input,float intensity);
@@ -140,16 +142,10 @@ ImagePointer ClassifyWMHs(ImagePointer WMModStripImg, std::string rfSegOutFilena
 ImagePointer CreateWMHPmap(ImagePointer rfSegmentedImg, ImagePointer refImg, std::string gcFilename, std::string pmapFilename);
 void QuantifyWMHs(float pmapCut, ImagePointer pmapImg, std::string ventricleFilename, std::string outputFilename);
 
-////For training
-//void ReadSubFolders(char * folderName,const char *foldersList);
-//void CreateTrainingDataset(char* WMFilename,char* pmapFilename,char* segoutFilename,char* featuresFilename);
 
 ////FOR TEST
 void CreatePatchFeatureVector(ImagePointer patch, Mat patchFeatureMat,std::string outputFilename,float classLabel);   //FOR TESTING AND DEBUGGING
 void CalculateMSE(ImagePointer img1,ImagePointer img2);
-//void PerformanceTest(std::string message);
-//void CreatePatchFeatureVectorN(NeighborhoodType patch, Mat patchFeatureMat);
-
 
 
 //New functions - Andy 2016
@@ -160,6 +156,10 @@ void getFeatureOut(std::string WMStrippedFilename, std::string BRAVOFilename,std
 void ReadSubFolders(std::string folderName, std::string foldersList);
 void CreateTrainingDataset(std::string WMFilename,std::string pmapFilename,std::string segoutFilename,std::string featuresFilename);
 std::string renamer(std::string baseName, std::string suffix);
+
+vecPair fitTdist(std::vector<double> y, std::vector<double> zeros,  double tol, int max_iter, double a, double b);
+vecPair fitMest(std::vector<double> y, std::vector<double> zeros,  double tol, int max_iter);
+
 
 //math functions
 double phi(double d);
@@ -198,13 +198,13 @@ std::string vecToString(vector<string> v);
 
 //new models
 ImagePointer ClassifyWMHsT(ImagePointer WMModStripImg, std::string rfSegOutFilename, int min_neighbour,  double p_thresh_const, double min_df, double max_df);
-ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilename, int min_neighbour, double out_thresh_const);
+ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilename, int min_neighbour, double out_thresh_const, int max_iter, double tol);
 
 ////////////////////////////////////////////////   //////////////////////////////////////////////////////////
 
 		
 int main(int argc, char *argv[])
-{
+{		//falgs
 		bool testFlag = false;
 		bool justGetFeat = false;
 		bool createNewTrainingSet = false;
@@ -213,7 +213,7 @@ int main(int argc, char *argv[])
 		bool classicFlag = false;
 		bool TFlag = false;
 		bool MFlag = false;
-		
+		bool twoDflag =  false; 
 		  	   		
 		int numberOfTrainingSamples;
 		int min_neighbours ;
@@ -232,6 +232,7 @@ int main(int argc, char *argv[])
 		std::string GMCSFStippedFilename;
 		std::string ventricleBinFilename; 
 		std::string rfmodelFilename;
+		
 		//output
 		std::string quantResultFilename;
 		std::string pmapOutFilename;
@@ -305,70 +306,108 @@ int main(int argc, char *argv[])
 			
 			// if use pmap cut value - normal mode
 			if (vm.count("p_cut")){
-				pmapCut = vm["p_cut"].as<double>(); 
-				classicFlag= true;
-				//names of various files, input and output
-				WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >());  
-				GMCSFStippedFilename = vecToString(vm["gm_strip"].as< vector<string> >()); 
-				ventricleBinFilename = vecToString(vm["vent_mask"].as< vector<string> >()); 
-				rfmodelFilename = vecToString(vm["rf_mod"].as< vector<string> >()); 
-				//output
-				quantResultFilename = vecToString(vm["quant"].as< vector<string> >()); 
-				pmapOutFilename = vecToString(vm["pmap"].as< vector<string> >()); 
-				segOutFilename = vecToString(vm["seg"].as< vector<string> >()); 
+				try{
+					pmapCut = vm["p_cut"].as<double>(); 
+					classicFlag= true;
+					//names of various files, input and output
+					WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >());  
+					GMCSFStippedFilename = vecToString(vm["gm_strip"].as< vector<string> >()); 
+					ventricleBinFilename = vecToString(vm["vent_mask"].as< vector<string> >()); 
+					rfmodelFilename = vecToString(vm["rf_mod"].as< vector<string> >()); 
+					//output
+					quantResultFilename = vecToString(vm["quant"].as< vector<string> >()); 
+					pmapOutFilename = vecToString(vm["pmap"].as< vector<string> >()); 
+					segOutFilename = vecToString(vm["seg"].as< vector<string> >());
+				}catch(...){
+					std::cerr << "Unable to read all inputs for classic(RF model) mode. Run --help" <<std::endl;
+					return 0;
+				} 
 				
 			}
 			
-			if (vm.count("p_thresh")){ // t-dist model
-				TFlag= true;
-				//names of various files, input and output
-				WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >());  
-				GMCSFStippedFilename = vecToString(vm["gm_strip"].as< vector<string> >()); 
-				ventricleBinFilename = vecToString(vm["vent_mask"].as< vector<string> >()); 
-				min_neighbours = vm["min_n"].as<int>();  //inputs for models
-				p_thresh_const = vm["p_thresh"].as<double>();
-				a = vm["min_v"].as<double>();
-				b = vm["max_v"].as<double>();
-				//std::cout<< p_thresh_const <<  vm["p_thresh"].as<double>() << std::endl;
-				//output
-				quantResultFilename = vecToString(vm["quant"].as< vector<string> >()); 
-				segOutFilename = vecToString(vm["seg"].as< vector<string> >()); 
+			if (vm.count("p_thresh")){
+				try{
+					// t-dist model
+					TFlag= true;
+					//names of various files, input and output
+					WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >());  
+					GMCSFStippedFilename = vecToString(vm["gm_strip"].as< vector<string> >()); 
+					ventricleBinFilename = vecToString(vm["vent_mask"].as< vector<string> >()); 
+					min_neighbours = vm["min_n"].as<int>();  //inputs for models
+					p_thresh_const = vm["p_thresh"].as<double>();
+					a = vm["min_v"].as<double>();
+					b = vm["max_v"].as<double>();
+					//std::cout<< p_thresh_const <<  vm["p_thresh"].as<double>() << std::endl;
+					//output
+					quantResultFilename = vecToString(vm["quant"].as< vector<string> >()); 
+					segOutFilename = vecToString(vm["seg"].as< vector<string> >()); 
+				}catch(...){
+					std::cerr << "Unable to read all inputs for t-distribution mode. Run --help" <<std::endl;
+					return 0;
+				} 
 				
 			}
 			
 			if (vm.count("d_thresh")){ //m-estimator model
-				MFlag= true;
-				//names of various files, input and output
-				WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >());  
-				GMCSFStippedFilename = vecToString(vm["gm_strip"].as< vector<string> >()); 
-				ventricleBinFilename = vecToString(vm["vent_mask"].as< vector<string> >()); 
-				min_neighbours = vm["min_n"].as<int>();  //inputs for models
-				d_thresh_const = vm["d_thresh"].as<double>();
-				
-				//output
-				quantResultFilename = vecToString(vm["quant"].as< vector<string> >()); 
-				segOutFilename = vecToString(vm["seg"].as< vector<string> >()); 
+				try{
+					MFlag= true;
+					//names of various files, input and output
+					WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >());  
+					GMCSFStippedFilename = vecToString(vm["gm_strip"].as< vector<string> >()); 
+					ventricleBinFilename = vecToString(vm["vent_mask"].as< vector<string> >()); 
+					min_neighbours = vm["min_n"].as<int>();  //inputs for models
+					d_thresh_const = vm["d_thresh"].as<double>();
+					
+					//output
+					quantResultFilename = vecToString(vm["quant"].as< vector<string> >()); 
+					segOutFilename = vecToString(vm["seg"].as< vector<string> >()); 
+				}catch(...){
+					std::cerr << "Unable to read all inputs for m-estimator mode. Run --help" <<std::endl;
+					return 0;
+				} 
 				
 			}
 						
 			if (vm.count("sample")){ //new rf mod
-				createNewRFModel = true;
-				trainingFilename = vecToString(vm["train"].as< vector<string> >());
-				rfmodelFilename = vecToString(vm["rf_mod"].as< vector<string> >());
-				numberOfTrainingSamples= vm["sample"].as<int>();  //the training data set size
-				
-			}
-			
-			if (vm.count("o")){ //feature output mode
-				justGetFeat = true;
-				WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >()); 
-				quantResultFilename2 = vecToString(vm["out"].as< vector<string> >()); 
-				BRAVOFilename = vecToString(vm["bravo"].as< vector<string> >()); 
-				WMMaskFilename = vecToString(vm["wm_mask"].as< vector<string> >());
-				
+				try{
+					createNewRFModel = true;
+					trainingFilename = vecToString(vm["train"].as< vector<string> >());
+					rfmodelFilename = vecToString(vm["rf_mod"].as< vector<string> >());
+					numberOfTrainingSamples= vm["sample"].as<int>();  //the training data set size
+				}catch(...){
+					std::cerr << "Unable to read all inputs for new RF model mode. Run --help" <<std::endl;
+					return 0;
+				} 
 					
 				
 			}
+			
+			if (vm.count("out")){ //feature output mode
+				try{
+					
+					justGetFeat = true;
+					WMStrippedFilename = vecToString(vm["wm_strip"].as< vector<string> >()); 
+					quantResultFilename2 = vecToString(vm["out"].as< vector<string> >()); 
+					BRAVOFilename = vecToString(vm["bravo"].as< vector<string> >()); 
+					WMMaskFilename = vecToString(vm["wm_mask"].as< vector<string> >());
+				}catch(...){
+					std::cerr << "Unable to read all inputs for raw feature output mode. Run --help" <<std::endl;
+					return 0;
+				} 
+					
+				
+			}else{
+				try{
+					if (vm.count("bravo")){
+						BRAVOFilename = vecToString(vm["bravo"].as< vector<string> >()); 
+						twoDflag  = true ;
+					}
+				}catch(...){
+					std::cerr << "Second image (T1/Bravo) argument was not correctly read." <<std::endl;
+					return 0;
+				}
+			}
+			
 			std::cout << std::endl;
 			std::cout << "Inputs read successfully." <<std::endl;
 	
@@ -402,7 +441,7 @@ int main(int argc, char *argv[])
 			std::cout<< "min_neighbour :  " << min_neighbours  << std::endl;
     			
 			RFSegOutImage=ClassifyWMHsT(inNifti, segOutFilename,  min_neighbours,  p_thresh_const, a, b);
-			RFSegOutImage2=ClassifyWMHsM(inNifti, segOutFilename,  min_neighbours,  d_thresh_const);
+			RFSegOutImage2=ClassifyWMHsM(inNifti, segOutFilename,  min_neighbours,  d_thresh_const, 100, 0.01);
 			
 			QuantifyWMHs(0.0, RFSegOutImage, ventricleBinFilename, quantResultFilename);
 			QuantifyWMHs(0.0, RFSegOutImage2, ventricleBinFilename, quantResultFilename);
@@ -414,8 +453,10 @@ int main(int argc, char *argv[])
 		
 		//returns features
 		if(justGetFeat)
-		{
-			getFeatureOut(WMStrippedFilename, BRAVOFilename, WMMaskFilename, quantResultFilename, numberOfFeatures );
+		{  	
+			std::cout << "processing... "  << std::endl;
+			getFeatureOut(WMStrippedFilename, BRAVOFilename, WMMaskFilename, quantResultFilename2, numberOfFeatures );
+			std::cout << "features saved in: " << quantResultFilename2 << std::endl;
 			return 0;
 		}
 		
@@ -470,35 +511,7 @@ int main(int argc, char *argv[])
 			std::cout<< "quant :  " << quantResultFilename  << std::endl;
 			std::cout<< "seg :  " << segOutFilename  << std::endl;
 			std::cout<< "pmap :  " << pmapOutFilename  << std::endl;
-		   
-			//       LoadTestingDataset("<path-to-.csv-test-file>",testingSamples,testingLabels,numberOfTestingSamples,numberOfFeatures);   //NOTE: THIS IS ONLY FOR TEST & DEBUG PURPOSES, WHEN WE HAVE A PRE-EXTRACTED TESTING DATA SET FROM THE MRI SCANS.
-
-			//Note: the following block of code can be used to calculate MSE, when the 'labels' are saved in the testing data set as the last column.
-			//       If not, 'CalculateMSE()' can be used.
-			//       std::cout << "Calculating testing data set error..." << std::endl;
-			//       float MSE=0;
-			//       for(int i=0; i<numberOfTestingSamples; ++i)
-			//       {
-			//          float prediction=rfModel->predict(testingSamples.row(i), Mat());
-			//          float actual=testingLabels.at<float>(i,0);
-			//
-			//         MSE+=std::pow(prediction - actual,2);
-			//       }
-			//       std::cout << "MSE=\t" << MSE/numberOfTestingSamples << std::endl;
-
-
-
-			//       std::cout << "Calculating training error..." << std::endl;
-			//       float MSE=0;
-			//      for(int i=0; i<numberOfTrainingSamples; ++i)
-			//      {
-			//         float prediction=rfModel->predict(trainingSamples.row(i), Mat());
-			//         float actual=trainingLabels.at<float>(i,0);
-			//         MSE+=std::pow(prediction - actual,2);
-			//      }
-			//      std::cout << "MSE=\t" << MSE/numberOfTrainingSamples << std::endl;
-
-			
+		   		
 			ImagePointer inNifti=NiftiReader(WMStrippedFilename);
 			//inNifti->SetReleaseDataFlag(true);      //Turn on/off the flags to control whether the bulk data belonging to the outputs of this ProcessObject are released after being used by a downstream ProcessObject. Default value is off. Another options for controlling memory utilization is the ReleaseDataBeforeUpdateFlag.
 			
@@ -531,7 +544,7 @@ int main(int argc, char *argv[])
 			std::cout<< "min_neighbour :  " << min_neighbours  << std::endl;
     			
 			//RFSegOutImage=ClassifyWMHsT(inNifti, segOutFilename,  min_neighbours,  p_thresh_const, a, b);
-			RFSegOutImageM=ClassifyWMHsM(inNifti, segOutFilenameM,  min_neighbours,  d_thresh_const);
+			RFSegOutImageM=ClassifyWMHsM(inNifti, segOutFilenameM,  min_neighbours,  d_thresh_const, 100, 0.0001);
 			
 			QuantifyWMHs(0.0, RFSegOutImageM, ventricleBinFilename, quantResultFilenameM);
 			//QuantifyWMHs(0.0, RFSegOutImage2, ventricleBinFilename, quantResultFilename);
@@ -642,23 +655,22 @@ void ShowCommandLineHelp()
 
 void getFeatureOut(std::string WMStrippedFilename, std::string BRAVOFilename,std::string WMMaskFilename, std::string quantResultFilename2,int numberOfFeatures ){
 	std::cout << "opening file: " << WMStrippedFilename << std::endl;
-	std::cout << "rreading in image" << std::endl;
+	std::cout << "reading in image" << std::endl;
 
 	ImagePointer inNifti=NiftiReader(WMStrippedFilename);
 	ImagePointer inNifti2=NiftiReader(BRAVOFilename);
 	ImagePointer inNiftiM=NiftiReader(WMMaskFilename);
 
-	//MaskFilterType::Pointer maskFilter = MaskFilterType::New();
-	//maskFilter->SetInput(inNifti2);
-	//maskFilter->SetMaskImage(inNiftiM);
-	//maskFilter->Update();
-	//ImagePointer inNifti2b = maskFilter->GetOutput();
 
-	//NiftiWriter(inNifti2b,"/data/home/uqajon14//TrainingData/CAI_itk_w2mhs/itk_data/test.nii" );
-
-
-	//Mat featMat =  getFeatureVector(inNifti,inNifti2b, numberOfFeatures);
+	MaskFilterType::Pointer maskFilter = MaskFilterType::New();
+	
+	maskFilter->SetInput(inNifti2);
+	maskFilter->SetMaskImage(inNiftiM);
+    maskFilter->Update();
+    
+	//Mat featMat =  getFeatureVector(inNifti,inNifti2, 2000);
 	Mat locMat =  getLocationVector(inNifti);
+	Mat locMat2 =  getLocationVector(maskFilter->GetOutput());
 
 	std::cout << "save out...." << std::endl;
 			
@@ -671,6 +683,22 @@ void getFeatureOut(std::string WMStrippedFilename, std::string BRAVOFilename,std
 			myfile.close();
             //myfile.close();
 	std::cout << "DONE!" << std::endl;
+	
+	std::cout << "save out...." << std::endl;
+			
+			std::ofstream myfile2;
+			myfile2.open(renamer(quantResultFilename2, "_bravo"));
+						
+			//myfile << format(featMat, "CSV") << std::endl;
+			myfile2 << format(locMat2, "CSV") << std::endl;
+			
+			myfile2.close();
+            //myfile.close();
+	std::cout << "DONE!" << std::endl;
+	
+	
+	
+	
   
 }
 
@@ -957,26 +985,16 @@ ImagePointer ClassifyWMHsT(ImagePointer WMModStripImg, std::string rfSegOutFilen
    RFSegOutImage->SetSpacing(WMModStripImg->GetSpacing());      //e.g. 2mm*2mm*2mm
    RFSegOutImage->SetOrigin(WMModStripImg->GetOrigin());
    RFSegOutImage->Allocate();
-   
-   
-   
-	
+  
 	
 	//creating an output image (i.e. a segmentation image) out of the prediction results.
-  
-
-   
+     
    NeighborhoodIteratorType::RadiusType radius;
    radius.Fill(1);
     
    // set up iterators
     itk::ImageRegionIterator<ImageType> RFSegOutIterator(RFSegOutImage, outRegion);
-    
-
-
-		
-
-
+ 
 	
     NeighborhoodIteratorType inputIterator(radius, WMModStripImg, WMModStripImg->GetRequestedRegion());
   	
@@ -995,126 +1013,51 @@ ImagePointer ClassifyWMHsT(ImagePointer WMModStripImg, std::string rfSegOutFilen
 		}
 		++inputIterator;
 	}
-  	double z_sum = std::accumulate(zeros.begin(), zeros.end(), 0.0);
-  	double y_sum = std::accumulate(y.begin(), y.end(), 0.0);
-	double y_mean = y_sum / y.size();
-	
-	std::cout<< "pixel length:  " << y.size() <<  std::endl;
-	
-	std::vector<double> w = zeros;  
-	std::vector<double> d(y.size(), 0.0);
-	std::vector<double> wy_prod(y.size(), 0.0);  
-	std::vector<double> ymu_minus(y.size(), 0.0);
-	std::vector<double> ymu_minus2(y.size(), 0.0);
-	std::vector<double> sq_sum(y.size(), 0.0);
-	std::vector<double> sq_sum_w(y.size(), 0.0);
-	std::vector<double> w2(y.size(), 0.0); 
-	std::vector<double> diff_w(y.size(), 0.0);
-	std::vector<double> outliness(y.size(), 0.0);
-	std::vector<double> log_w(y.size(), 0.0);
-	
-	double mu = 0.0;
-	double sigma = 0.0;
-	double wy_sum = 0.0;
-	double w_sum = 0.0;
-	double w_sq_sum = 0.0;
-	double v_sum =0.0;
-	double diff = 1.0;
-	
-	int k =0;
 	
 	
-	double v = v_init;
-
-   
-   while(diff>tol & k <max_iter ){
-			    
-		boost::uintmax_t df_max_iter=500;
-		tools::eps_tolerance<double> tol(30);
-		
-		std::transform(y.begin(), y.end(), w.begin(), wy_prod.begin(), std::multiplies<double>()); 
-		wy_sum = std::accumulate(wy_prod.begin(), wy_prod.end(), 0.0);
-		w_sum = std::accumulate(w.begin(), w.end(), 0.0);
-		mu = y_sum/z_sum;
-		
-		std::transform(y.begin(), y.end(), ymu_minus.begin(), [mu](double x) { return x - mu; });
-			
-		
-		std::transform(ymu_minus.begin(), ymu_minus.end(), ymu_minus.begin(), sq_sum.begin(), std::multiplies<double>()); 
-		std::transform(sq_sum.begin(), sq_sum.end(), w.begin(), sq_sum_w.begin(), std::multiplies<double>()); 
-		sigma =  std::accumulate(sq_sum_w.begin(), sq_sum_w.end(), 0.0) / z_sum; //sigma is variance not sd
-		
-				
-				
-		std::transform(w.begin(),w.end(), log_w.begin(), [](double x) { return (std::log(x) - x); });
-		std::transform(log_w.begin(), log_w.end(), log_w.begin(), [](double x) { return isinf(x) ? 0.0 : x  ; }); //ignores pixels with value = 0
-		v_sum = std::accumulate(log_w.begin(), log_w.end(), 0.0)/ z_sum;
-		
-		if(k !=0){
-			df_eq_func rootFun = df_eq_func(v_sum);
-			std::pair<double, double>  r1= tools::bisect(rootFun, a, b, tol, df_max_iter);
-			v = (r1.first + r1.second)/2.0; 
-		}
-		
-		
-		std::transform(sq_sum.begin(), sq_sum.end(), d.begin(), [sigma](double x) { return std::sqrt(x / sigma); });
-		w2 = w;	
-		
-		
-		std::transform(d.begin(), d.end(), w.begin(), [v](double x) { return ((v+1) / (v+x*x));});
-		std::transform(w.begin(), w.end(), zeros.begin(), w.begin(), std::multiplies<double>()); //ignores pixels with value = 0
-
-		std::transform(w.begin(), w.end(), w2.begin(), diff_w.begin(), [](double x, double y) {return std::abs(x-y);}); 
-		
-		diff = std::accumulate(diff_w.begin(), diff_w.end(), 0.0);
+	vecPair model = fitTdist( y,  zeros,   tol,  max_iter,  a,  b);
 	
-		//std::cout<< "iter " << k << " mu " << mu << " sigma " << sigma << " v " << v << " diff " << diff << std::endl;
-		
-		++k;
-		
-   }
-   
-	std::cout<< "iter " << k << " mu " << mu << " sigma " << sigma << " v " << v << " diff " << diff << std::endl;	
-
+	
+	double mu = model.second.at(2);
+	double sigma = model.second.at(1);   
+	double v = model.second.at(0);
+	
+	//std::cout << "df  " << v << " mean "<< mu << " sd  "<< sigma << std::endl;
 	
 	double p_thresh_const_2 = 1.0-p_thresh_const;
 		
-
-	std::transform(d.begin(), d.end(), zeros.begin(), d.begin(), std::multiplies<double>());  //ignores pixels with value = 0
-	
-	// Construct a students_t distribution with 4 degrees of freedom:
+	// Construct a students_t distribution with v degrees of freedom:
     students_t d1(v);
     std::vector<double> q(y.size(), 0.0);
     std::transform(y.begin(), y.end(), q.begin(),  [d1, mu, sigma](double x) { return cdf(d1, (x-mu)/std::sqrt(sigma)); }); 
 	
-
   	vector<double>::iterator it; 
     it=q.begin();
 	   
 	inputIterator.GoToBegin();
+	
 	int c = (inputIterator.Size());
 	int mid = (inputIterator.Size()) / 2;
 	
-   while(!inputIterator.IsAtEnd())
-   {
+	
+	
+	while(!inputIterator.IsAtEnd())
+	{
 		double acc = 0.0;
 		double neighbourhood_mean = 0.0;
 		int non_zero = 0;
 		
 		for(int i=0; i<c; i++){		
 			double temp  = inputIterator.GetPixel(i);
-			acc += temp;
-			if(temp>0){++non_zero;}
+			if(i != (c/2))
+			{
+				acc += temp;
+				if(temp>0){++non_zero;}
+			}
 		
 		}	
 		neighbourhood_mean = acc/non_zero;			       
         
-           
-        //std::cout<< "values for dist " << *it   << std::endl;
-        
-         
-
-
          if(neighbourhood_mean > mu & *it > (1.- p_thresh_const)){
 			RFSegOutIterator.Set(1.0);
 		 }else{
@@ -1126,8 +1069,6 @@ ImagePointer ClassifyWMHsT(ImagePointer WMModStripImg, std::string rfSegOutFilen
 		 ++inputIterator;
 		 it++;
 	}
-	
-	
 	
 	
 	ImagePointer RFSegOutImage2=ImageType::New();
@@ -1161,7 +1102,7 @@ ImagePointer ClassifyWMHsT(ImagePointer WMModStripImg, std::string rfSegOutFilen
 	}
 		
   
-   NiftiWriter(RFSegOutImage2,rfSegOutFilename.c_str()); 
+   NiftiWriter(RFSegOutImage,rfSegOutFilename.c_str()); 
 
    std::cout << "Done WMH segmentation successfully." << std::endl;
    return RFSegOutImage;
@@ -1170,59 +1111,52 @@ ImagePointer ClassifyWMHsT(ImagePointer WMModStripImg, std::string rfSegOutFilen
 
 //FOR TEST: 'testingSamples' IS PASSED TO THIS METHOD ONLY WHEN TESTING & DEBUGGING. IN REAL CASES, THESE SAMPLES WILL BE EXTRACTED FROM THE INPUT IMAGES.
 //ImagePointer ClassifyWMHs(ImagePointer WMModStripImg,CvRTrees* RFRegressionModel, int featuresCount,char *rfSegOutFilename, Mat testingSamples)
-ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilename, int min_neighbour, double out_thresh_const)
+ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilename, int min_neighbour, double out_thresh_const, int max_iter=100, double tol = 0.0001)
 {
-//alg parameters
-	int max_iter=100;
-	double tol = 0.0001;
+
 	
-   std::cout << "Performing WMH segmentation with M-estimator..." << std::endl;
-
-   MarginateImage(WMModStripImg,5);                        
-   
-   //Patch width is 5 voxels. Thus, a margin of size 5 voxels will be discarded to avoid any problems when doing image convolution with kernels.
-
-   /* The image will be rescaled in order to discard the long tail seen in the image histogram (i.e. about 0.3 of the histogram, which contains informationless voxels).
-    * Note: itk::BinaryThresholdImageFilter can be used instead, if it is required to save the thresholded indexes (as in the W2MHS toolbox).
-    */
-   
-   WMModStripImg->SetRequestedRegionToLargestPossibleRegion();
-   //itk::ImageRegionIterator<ImageType> inputIterator(WMModStripImg, WMModStripImg->GetRequestedRegion());
-
-   //creating an output image (i.e. a segmentation image) out of the prediction results.
-   ImagePointer RFSegOutImage=ImageType::New();
-
-   ImageType::IndexType outStartIdx;
-   outStartIdx.Fill(0);
-
-   ImageType::SizeType outSize=WMModStripImg->GetLargestPossibleRegion().GetSize();
-   ImageType::RegionType outRegion;
-   outRegion.SetSize(outSize);
-   outRegion.SetIndex(outStartIdx);
-
-   RFSegOutImage->SetRegions(outRegion);
-   RFSegOutImage->SetDirection(WMModStripImg->GetDirection());   //e.g. left-right Anterior-Posterior Sagittal-...
-   RFSegOutImage->SetSpacing(WMModStripImg->GetSpacing());      //e.g. 2mm*2mm*2mm
-   RFSegOutImage->SetOrigin(WMModStripImg->GetOrigin());
-   RFSegOutImage->Allocate();
-   	
+	std::cout << "Performing WMH segmentation with M-estimator..." << std::endl;
+	
+	MarginateImage(WMModStripImg,5);                        
+	//Patch width is 5 voxels. Thus, a margin of size 5 voxels will be discarded to avoid any problems when doing image convolution with kernels.
+	// kept in to keep consistent with older RF model
+	
 	
 	//creating an output image (i.e. a segmentation image) out of the prediction results.
-     
-   NeighborhoodIteratorType::RadiusType radius;
-   radius.Fill(1);
-    
-   // set up iterators
-    itk::ImageRegionIterator<ImageType> RFSegOutIterator(RFSegOutImage, outRegion);
-    	
-    NeighborhoodIteratorType inputIterator(radius, WMModStripImg, WMModStripImg->GetRequestedRegion());
+	WMModStripImg->SetRequestedRegionToLargestPossibleRegion();
+	ImagePointer RFSegOutImage=ImageType::New();
+	
+	ImageType::IndexType outStartIdx;
+	outStartIdx.Fill(0);
+	
+	ImageType::SizeType outSize=WMModStripImg->GetLargestPossibleRegion().GetSize();
+	ImageType::RegionType outRegion;
+	outRegion.SetSize(outSize);
+	outRegion.SetIndex(outStartIdx);
+	
+	RFSegOutImage->SetRegions(outRegion);
+	RFSegOutImage->SetDirection(WMModStripImg->GetDirection());   //e.g. left-right Anterior-Posterior Sagittal-...
+	RFSegOutImage->SetSpacing(WMModStripImg->GetSpacing());      //e.g. 2mm*2mm*2mm
+	RFSegOutImage->SetOrigin(WMModStripImg->GetOrigin());
+	RFSegOutImage->Allocate();
+	
+	     
+	NeighborhoodIteratorType::RadiusType radius;
+	radius.Fill(1);
+	
+	// set up iterators
+	itk::ImageRegionIterator<ImageType> RFSegOutIterator(RFSegOutImage, outRegion);
+		
+	NeighborhoodIteratorType inputIterator(radius, WMModStripImg, WMModStripImg->GetRequestedRegion());
+	
+	//initialise vectors
+	std::vector<double> y;
+	std::vector<double> zeros;
+	
+	//model fit
+	// robust fit normal dist with M estimator
   	
-  	std::vector<double> y;
-  	std::vector<double> zeros;
-  	
-  	//model fit
-  	// robust fit normal dist with M estimator
-  	
+  	//put data into std::vector
 	while(!inputIterator.IsAtEnd())
 	{
 		y.push_back(inputIterator.GetCenterPixel());
@@ -1233,71 +1167,30 @@ ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilen
 		}
 		++inputIterator;
 	}
-  	double z_sum = std::accumulate(zeros.begin(), zeros.end(), 0.0);
-  	double y_sum = std::accumulate(y.begin(), y.end(), 0.0);
-	double y_mean = y_sum / y.size();
-	std::cout<< "length  " << y.size() <<  std::endl;
 	
-	std::vector<double> w = zeros;  
-	std::vector<double> d(y.size(), 0.0);
-	std::vector<double> wy_prod(y.size(), 0.0);  
-	std::vector<double> ymu_minus(y.size(), 0.0);
-	std::vector<double> ymu_minus2(y.size(), 0.0);
-	std::vector<double> sq_sum(y.size(), 0.0);
-	std::vector<double> sq_sum_w(y.size(), 0.0);
-	std::vector<double> w2(y.size(), 0.0); 
-	std::vector<double> diff_w(y.size(), 0.0);
-	std::vector<double> outliness(y.size(), 0.0);
-	std::vector<double> log_w(y.size(), 0.0);
 	
-	double mu = 0.0;
-	double sigma = 0.0;
-	double wy_sum = 0.0;
-	double w_sum = 0.0;
-	double w_sq_sum = 0.0;
-	double v_sum =0.0;
-	double diff = 1.0;
 	
-	int k =0;
+	vecPair model = fitMest(y, zeros,  tol, max_iter);
+		
+	double mu = model.second.at(1);
+	double sigma = model.second.at(0);   
 	
-	//iterative fit for M-est
-	while(diff>tol & k <max_iter ){
-			
-		std::transform(y.begin(), y.end(), w.begin(), wy_prod.begin(), std::multiplies<double>()); 
-		wy_sum = std::accumulate(wy_prod.begin(), wy_prod.end(), 0.0);
-		w_sum = std::accumulate(w.begin(), w.end(), 0.0);
-		mu = y_sum/w_sum;
-		
-		std::transform(y.begin(), y.end(), ymu_minus.begin(), [mu](double x) { return x - mu; });
-			
-		std::transform(ymu_minus.begin(), ymu_minus.end(), ymu_minus.begin(), sq_sum.begin(), std::multiplies<double>()); 
-		std::transform(sq_sum.begin(), sq_sum.end(), w.begin(), sq_sum_w.begin(), std::multiplies<double>()); 
-		sigma =  std::accumulate(sq_sum_w.begin(), sq_sum_w.end(), 0.0) / w_sum; //sigma is variance not sd
-		
-		std::transform(sq_sum.begin(), sq_sum.end(), d.begin(), [sigma](double x) { return std::sqrt(x / sigma); });
-		
-		w2 = w;
-		std::transform(d.begin(), d.end(), w.begin(), phi);
-		std::transform(w.begin(), w.end(), zeros.begin(), w.begin(), std::multiplies<double>()); //ignores pixels with value = 0
-
-		std::transform(w.begin(), w.end(), w2.begin(), diff_w.begin(), [](double x, double y) {return std::abs(x-y);}); 
-		
-		diff = std::accumulate(diff_w.begin(), diff_w.end(), 0.0);
-		++k;
-		
-   }
-   
-
-	std::transform(d.begin(), d.end(), zeros.begin(), d.begin(), std::multiplies<double>());  //ignores pixels with value = 0
+	vector<double>::iterator it; 
 	
-  	vector<double>::iterator it; 
-    it=d.begin();
+    it=model.first.begin();
+    
 	//malahabnois dist cutoff as in van leemput 99
 	double outly = -2*std::log(out_thresh_const*std::sqrt(2*3.141593*sigma)); 
+    
+    
    
 	inputIterator.GoToBegin();
 	int c = (inputIterator.Size());
 	int mid = (inputIterator.Size()) / 2;
+	
+	
+	
+	
 	
    while(!inputIterator.IsAtEnd())
    {
@@ -1307,20 +1200,30 @@ ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilen
 		
 		for(int i=0; i<c; i++){		
 			double temp  = inputIterator.GetPixel(i);
-			acc += temp;
-			if(temp>0){++non_zero;}
+			
+			if(i != (c/2))
+			{
+				acc += temp;
+				if(temp>0){++non_zero;}
+			}
 		
 		}	
-		neighbourhood_mean = acc/non_zero;			       
-        
+		
+		if(non_zero>0.){
+			neighbourhood_mean = acc/non_zero;			       
+        }else{
+			neighbourhood_mean = 0.;	
+		}
            
-        //std::cout<< "values for dist " << *it   << std::endl;
+       
         
          
-
+		
 
          if(neighbourhood_mean > mu & *it > outly){
 			RFSegOutIterator.Set(1.0);
+			std::cout << "local mean " << neighbourhood_mean << " mean "<< mu << " dist "<< *it << " cutoff "<< outly  << std::endl;
+			
 		 }else{
 			RFSegOutIterator.Set(0.0);
 		 }
@@ -1337,6 +1240,7 @@ ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilen
 	NeighborhoodIteratorType RFSegOutIterator2(radius, RFSegOutImage2, outRegion);
 	
 	RFSegOutIterator.GoToBegin();
+	
 	//adjust using counts
 	while(!RFSegOutIterator2.IsAtEnd())
 	{
@@ -1345,14 +1249,13 @@ ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilen
 		
 		for(int i=0; i<c; i++){
 			if(RFSegOutIterator2.GetPixel(i) == 1.0 & i != (c/2)){++count;}
-					
 		}	
 		
 		if(count< min_neighbour){
 			RFSegOutIterator.Set(0.0);
 		}else{
 			RFSegOutIterator.Set(RFSegOutIterator2.GetCenterPixel());
-			}
+		}
 			
   	   
 		
@@ -1361,13 +1264,184 @@ ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilen
 	}
 		
   
-   NiftiWriter(RFSegOutImage2,rfSegOutFilename.c_str()); 
+   NiftiWriter(RFSegOutImage,rfSegOutFilename.c_str()); 
 
    std::cout << "Done WMH segmentation successfully." << std::endl;
    return RFSegOutImage;
 }//end of ClassifyWMHs()
 
 
+vecPair fitMest(std::vector<double> y, std::vector<double> zeros,  double tol, int max_iter){
+
+	std::cout<< "observation length:  " << y.size() << " pixels" <<   std::endl;
+	
+  	//double z_sum = std::accumulate(zeros.begin(), zeros.end(), 0.0);
+  	double y_sum = std::accumulate(y.begin(), y.end(), 0.0);
+	//double y_mean = y_sum / y.size();
+	
+	//allocate vectors
+	std::vector<double> w = zeros;  
+	std::vector<double> d(y.size(), 0.0);
+	std::vector<double> wy_prod(y.size(), 0.0);  
+	std::vector<double> ymu_minus(y.size(), 0.0);
+	std::vector<double> ymu_minus2(y.size(), 0.0);
+	std::vector<double> sq_sum(y.size(), 0.0);
+	std::vector<double> sq_sum_w(y.size(), 0.0);
+	std::vector<double> w2(y.size(), 0.0); 
+	std::vector<double> diff_w(y.size(), 0.0);
+	std::vector<double> outliness(y.size(), 0.0);
+	std::vector<double> log_w(y.size(), 0.0);
+	
+	//allocate double
+	double mu = 0.0;
+	double sigma = 0.0;
+	double wy_sum = 0.0;
+	double w_sum = 0.0;
+	double w_sq_sum = 0.0;
+	double v_sum = 0.0;
+	double diff = 1.0;
+	
+	//allocated int
+	int k =0;
+	
+	
+	//iterative fit for M-est
+	while(diff>tol & k <max_iter ){
+		std::transform(w.begin(), w.end(), zeros.begin(), w.begin(), std::multiplies<double>());
+		
+		std::transform(y.begin(), y.end(), w.begin(), wy_prod.begin(), std::multiplies<double>()); 
+		wy_sum = std::accumulate(wy_prod.begin(), wy_prod.end(), 0.0);
+		w_sum = std::accumulate(w.begin(), w.end(), 0.0);
+		
+		mu = y_sum/w_sum;
+		
+		std::transform(y.begin(), y.end(), ymu_minus.begin(), [mu](double x) { return x - mu; });
+			
+		std::transform(ymu_minus.begin(), ymu_minus.end(), ymu_minus.begin(), sq_sum.begin(), std::multiplies<double>()); 
+		std::transform(sq_sum.begin(), sq_sum.end(), w.begin(), sq_sum_w.begin(), std::multiplies<double>()); 
+		sigma =  std::accumulate(sq_sum_w.begin(), sq_sum_w.end(), 0.0) / w_sum; //sigma is variance not sd
+		
+		std::transform(sq_sum.begin(), sq_sum.end(), d.begin(), [sigma](double x) { return std::sqrt(x / sigma); });
+		
+		w2 = w;
+		std::transform(d.begin(), d.end(), w.begin(), phi);
+		std::transform(w.begin(), w.end(), zeros.begin(), w.begin(), std::multiplies<double>()); //ignores pixels with value = 0
+		
+		std::transform(w.begin(), w.end(), w2.begin(), diff_w.begin(), [](double x, double y) {return std::abs(x-y);}); 
+		
+		diff = std::accumulate(diff_w.begin(), diff_w.end(), 0.0);
+		++k;
+	
+	}
+	
+	std::transform(d.begin(), d.end(), zeros.begin(), d.begin(), std::multiplies<double>());  //ignores pixels with value = 0
+	
+	std::cout<< "iter " << k << " mu " << mu << " sigma " << sigma << " diff " << diff << std::endl;
+	
+	std::vector<double> params;
+	params.push_back(sigma);
+	params.push_back(mu);
+	
+	
+	vecPair returnValues = vecPair(d, params);
+	
+	return(returnValues);
+}
+
+
+
+vecPair fitTdist(std::vector<double> y, std::vector<double> zeros,  double tol, int max_iter, double a, double b){
+
+	std::cout<< "observation length:  " << y.size() << " pixels" <<   std::endl;
+	
+  	double z_sum = std::accumulate(zeros.begin(), zeros.end(), 0.0);
+  	double y_sum = std::accumulate(y.begin(), y.end(), 0.0);
+	//double y_mean = y_sum / y.size();
+	
+	//allocate vectors
+	std::vector<double> w = zeros;  
+	std::vector<double> d(y.size(), 0.0);
+	std::vector<double> wy_prod(y.size(), 0.0);  
+	std::vector<double> ymu_minus(y.size(), 0.0);
+	std::vector<double> ymu_minus2(y.size(), 0.0);
+	std::vector<double> sq_sum(y.size(), 0.0);
+	std::vector<double> sq_sum_w(y.size(), 0.0);
+	std::vector<double> w2(y.size(), 0.0); 
+	std::vector<double> diff_w(y.size(), 0.0);
+	std::vector<double> outliness(y.size(), 0.0);
+	std::vector<double> log_w(y.size(), 0.0);
+	
+	//allocate double
+	double mu = 0.0;
+	double sigma = 0.0;
+	double wy_sum = 0.0;
+	double w_sum = 0.0;
+	double w_sq_sum = 0.0;
+	double v_sum = 0.0;
+	double diff = 1.0;
+	double v = 4.0; // initial guess for degrees of freedom, could be user param but actually not very important, range (a,b) more important.
+	
+	//allocated int
+	int k =0;
+	
+	while(diff>tol & k <max_iter ){
+		    
+		boost::uintmax_t df_max_iter=500; // boost solver params, could be user params but relatively unimportant
+		tools::eps_tolerance<double> tol(30);
+		
+		std::transform(y.begin(), y.end(), w.begin(), wy_prod.begin(), std::multiplies<double>()); 
+		wy_sum = std::accumulate(wy_prod.begin(), wy_prod.end(), 0.0);
+		w_sum = std::accumulate(w.begin(), w.end(), 0.0);
+		mu = y_sum/z_sum;
+		
+		std::transform(y.begin(), y.end(), ymu_minus.begin(), [mu](double x) { return x - mu; });
+			
+		
+		std::transform(ymu_minus.begin(), ymu_minus.end(), ymu_minus.begin(), sq_sum.begin(), std::multiplies<double>()); 
+		std::transform(sq_sum.begin(), sq_sum.end(), w.begin(), sq_sum_w.begin(), std::multiplies<double>()); 
+		sigma =  std::accumulate(sq_sum_w.begin(), sq_sum_w.end(), 0.0) / z_sum; //sigma is variance not sd
+		
+				
+				
+		std::transform(w.begin(),w.end(), log_w.begin(), [](double x) { return (std::log(x) - x); });
+		std::transform(log_w.begin(), log_w.end(), log_w.begin(), [](double x) { return isinf(x) ? 0.0 : x  ; }); //ignores pixels with value = 0
+		v_sum = std::accumulate(log_w.begin(), log_w.end(), 0.0)/ z_sum;
+		
+		if(k !=0){
+			df_eq_func rootFun = df_eq_func(v_sum);
+			std::pair<double, double>  r1= tools::bisect(rootFun, a, b, tol, df_max_iter);
+			v = (r1.first + r1.second)/2.0; 
+		}
+		
+		
+		std::transform(sq_sum.begin(), sq_sum.end(), d.begin(), [sigma](double x) { return std::sqrt(x / sigma); });
+		w2 = w;	
+		
+		
+		std::transform(d.begin(), d.end(), w.begin(), [v](double x) { return ((v+1) / (v+x*x));});
+		std::transform(w.begin(), w.end(), zeros.begin(), w.begin(), std::multiplies<double>()); //ignores pixels with value = 0
+		
+		std::transform(w.begin(), w.end(), w2.begin(), diff_w.begin(), [](double x, double y) {return std::abs(x-y);}); 
+		
+		diff = std::accumulate(diff_w.begin(), diff_w.end(), 0.0);
+		
+		//std::cout<< "iter " << k << " mu " << mu << " sigma " << sigma << " v " << v << " diff " << diff << std::endl;
+		
+		++k;
+	
+	}
+    std::transform(d.begin(), d.end(), zeros.begin(), d.begin(), std::multiplies<double>());  //ignores pixels with value = 0
+
+	std::cout<< "iter " << k << " mu " << mu << " sigma " << sigma << " v " << v << " diff " << diff << std::endl;	
+
+	std::vector<double> params;
+	params.push_back(v);
+	params.push_back(sigma);
+	params.push_back(mu);
+	
+	vecPair returnValues = vecPair(d, params);
+	return(returnValues);
+}
 
 
 
@@ -1470,66 +1544,6 @@ ImagePointer CreateWMHPmap(ImagePointer rfSegmentedImg, ImagePointer refImg, std
    
    return unrectifiedPmap;
 }//end of CreateWMHPmap()
-
-
-//ImagePointer CreateWMHPmapLR(ImagePointer rfSegmentedImg, char *pmapFilename)
-//{
-   //std::cout << "Creating WMH probability map...THE OLD FASHIONED WAY" << std::endl;
-
-
-	//rfSegmentedImg->SetRequestedRegionToLargestPossibleRegion();
-    //itk::ImageRegionIterator<ImageType> inputIterator(rfSegmentedImg, rfSegmentedImg->GetRequestedRegion());
-	//ImageType::SizeType outSize=rfSegmentedImg->GetLargestPossibleRegion().GetSize();
-	//ImageType::IndexType outStartIdx;
-    //outStartIdx.Fill(0);
-	
-	////creating an output image of the prediction results.
-   //ImagePointer unrectifiedPmap=ImageType::New();
-
-   //ImageType::RegionType outRegion;
-   //outRegion.SetSize(outSize);
-   //outRegion.SetIndex(outStartIdx);
-
-   //unrectifiedPmap->SetRegions(outRegion);
-   //unrectifiedPmap->SetDirection(rfSegmentedImg->GetDirection());   //e.g. left-right Anterior-Posterior Sagittal-...
-   //unrectifiedPmap->SetSpacing(rfSegmentedImg->GetSpacing());      //e.g. 2mm*2mm*2mm
-   //unrectifiedPmap->SetOrigin(rfSegmentedImg->GetOrigin());
-   //unrectifiedPmap->Allocate();
-  
-   //itk::ImageRegionIterator<ImageType> pmapIter(unrectifiedPmap, outRegion);
-    
-	
-   //while(!inputIterator.IsAtEnd())
-   //{
-	////placeholder until I can get a real LR set up. needs both -1 to +1 rgression output but also pure classification from RF model which in the CVrTrees framework means retraining.
-    //pmapIter.Set(((inputIterator.Get()+1.0)/2.0));
-  
-  
-	//++inputIterator;
-	//++pmapIter;
-   //}
-  
-   //NiftiWriter(unrectifiedPmap,pmapFilename);   //'unrectifiedPmap' is a rectified pmap at this stage
-   //std::cout << "WMH probability map is saved into: " << pmapFilename << std::endl;
-
-   //return unrectifiedPmap;
-//}//end of CreateWMHPmap()
-
-//ImagePointer CreateWMHPmapN(ImagePointer rfSegmentedImg, char *pmapFilename)
-//{
-   //std::cout << "Creating WMH probability map...NORMALIZATION" << std::endl;
-
-   //ImagePointer unrectifiedPmap = MinMaxNormalisation(rfSegmentedImg);
-   //NiftiWriter(unrectifiedPmap,pmapFilename);   //'unrectifiedPmap' is a rectified pmap at this stage
-   //std::cout << "WMH probability map is saved into: " << pmapFilename << std::endl;
-
-   //return unrectifiedPmap;
-//}//end of CreateWMHPmap()
-
-
-
-
-
 
 
 
@@ -1816,111 +1830,6 @@ ImagePointer2D Get2DSlice(ImagePointer input3D,int plane, int slice)
 
    return output2D;
 }//end of Get2DSlice()
-
-/*void ReadSubFolders(char * folderName,const char *foldersList)
-{
-   //NOTE: This method is particularly implemented to work with the "folder names", which are being used in the W2MHS toolbox.
-
-   //iterate through all sub-folders of the main directory, which consists of the WM_... images and the pmap images of subjects in separate folders
-   std::ifstream list(foldersList);
-   if(!list)
-   {
-      std::cerr << "Cannot read file: " <<  foldersList << std::endl;
-      return;
-   }
-   else
-   {
-      string subfolder;
-      while (std::getline(list, subfolder))
-      {
-         //subfolder="out_..." at this point
-         string subfolderID=subfolder.substr(4);      //keeps the substring after "out_"
-         string general=folderName+subfolder;
-         string WMname=general+"/WM_modstrip_"+subfolderID+".nii.gz";
-         string PMAPname=general+"/RFREG_pmap_"+subfolderID+".nii.gz";
-         string Segoutname=general+"/RFREG_out_"+subfolderID+".nii.gz";
-         string featuresName=general+"/trainingFeatures_"+subfolderID+".csv";
-         CreateTrainingDataset((char *)WMname.c_str(),(char*)PMAPname.c_str(),(char*)Segoutname.c_str(),(char*)featuresName.c_str());
-
-         std::cout << "Training feature set " << subfolder << " created successfully!" << std::endl;
-      }
-   }
-}//end of ReadSubFolders()
-
-
-void CreateTrainingDataset(char* WMFilename,char* pmapFilename,char* segoutFilename,char* featuresFilename)
-{
-
-   double minNO=0;
-   double maxNO=0.699;
-   double minYES=0.7;   //0.7 is the gamma value suggested by Kristan. As the RFREG_out images are generated by his modified code, then this threshold will probably works better for creating a training dataset out of W2MHS outputs
-   double maxYES=1;
-   //
-   ImagePointer wmNifti=NiftiReader(WMFilename);
-   ImagePointer pmapNifti=NiftiReader(pmapFilename);
-   ImagePointer segoutNifti=NiftiReader(segoutFilename);
-
-   MarginateImage(wmNifti,5);      //patch width is 5
-   double threshold=0.3*GetHistogramMax(wmNifti,127);      //this is based on what has been done in the W2MHS toolbox
-   //1.iterating through the thresholded voxels
-   //2.creating patches for each voxel
-   //3.extracting features for each patch
-   wmNifti->SetRequestedRegionToLargestPossibleRegion();
-   itk::ImageRegionIterator<ImageType> inputIterator(wmNifti, wmNifti->GetRequestedRegion());
-
-   pmapNifti->SetRequestedRegionToLargestPossibleRegion();
-   itk::ImageRegionIterator<ImageType> pmapIterator(pmapNifti, pmapNifti->GetRequestedRegion());
-
-   segoutNifti->SetRequestedRegionToLargestPossibleRegion();
-   itk::ImageRegionIterator<ImageType> segoutIterator(segoutNifti, segoutNifti->GetRequestedRegion());
-
-   while(!inputIterator.IsAtEnd())
-   {
-      if(inputIterator.Get() > threshold)
-      {
-         double classLabel=pmapIterator.Get();
-//         double segoutVal=segoutIterator.Get();
-//         if((segoutVal==1 && classLabel<maxNO) || (segoutVal!=1 && classLabel>minYES))
-//         {
-//            if(segoutVal==1 && classLabel<maxNO)
-//            {
-//               classLabel=-1;
-//            }
-//            if(segoutVal!=1 && classLabel>minYES)
-//            {
-//               classLabel=1;
-//            }
-
-
-
-      //         if(classLabel > minNO)
-      //         {
-      //         if((classLabel > minNO && classLabel <= maxNO) || (classLabel >= minYES && classLabel <= maxYES))
-      //         {
-      //            if(classLabel > minNO && classLabel <= maxNO)
-      //               classLabel=-1;
-      //            else    //if(pmapIntensity >= minYES && pmapIntensity <= maxYES)
-      //               classLabel=1;
-
-      //               if(classLabel >= 0.5)
-      //                  classLabel=1;
-      //               else if(classLabel < 0.5)   //if(pmapIntensity >= minYES && pmapIntensity <= maxYES)
-      //                  classLabel=-1;
-                  ImagePointer patch=GetPatch(wmNifti,inputIterator.GetIndex(), 5);
-                  Mat testSample = Mat(1, 2000, CV_32FC1);//NOT BEING USED HERE
-                  CreatePatchFeatureVector(patch,testSample,featuresFilename,classLabel);
-      //         }
-      //         }
-//         }
-      }
-      ++inputIterator;
-      ++pmapIterator;
-      ++segoutIterator;
-   }//end of iteration through the marginated and thresholded input image
-}//end of CreateTrainingDataset()
-*/
-
-
 
 bool LoadTrainingDataset(std::string trainingFilename, Mat trainingFeatures, Mat trainingLabels,int samplesCount,int featuresCount)
 {
@@ -2627,51 +2536,6 @@ void CreatePatchFeatureVector(ImagePointer patch, Mat patchFeatureMat)
 }//end of CreatePatchFeatureVector()
 
 
-
-/*
-void CreatePatchFeatureVector(ImagePointer patch, Mat patchFeatureMat, char* outputFilename,float classLabel)
-{
-   //NOTE: THIS METHOD OVERLOAD IS USED WHEN IT IS REQUIRED TO SAVE THE FEATURE VECTORS TOGHETHER WITH THEIR CORRESPONDING "CLASSLABEL" INTO A FILE.
-   //      THIS IS NOW BEING USED WHEN CREATING A TRAINING DATASET.
-
-
-   //get all kernels as a list. Kernels should be calculated first and be used as many times as needed.
-   std::list<ImagePointer> kernels=GetAllKernels();
-   int startIdx=0;      //this is to tell the AppendToPatchFeatureVector(), where to add new features
-   //get voxel intensities of each voxel of the path and add them to the feature vector of the patch
-   WriteImageFeatureVectorToFile(patch,true,outputFilename);
-
-   for (std::list<ImagePointer>::iterator kernelsIterator=kernels.begin(); kernelsIterator!=kernels.end(); ++kernelsIterator)
-   {
-      startIdx+=(patch->GetLargestPossibleRegion().GetSize()[0]*patch->GetLargestPossibleRegion().GetSize()[1]*patch->GetLargestPossibleRegion().GetSize()[2]);
-      //1. convolve the patch with all the kernels one by one
-      //2. get values of the returned convolved image and add them to the feature vector of the patch
-      ImagePointer convolvedImg=ConvolveImage(patch,*kernelsIterator,false);
-      //NOTE: some scaling has been done on the convolved image in the W2MHS toolbox, which are done here.
-      //      When we can get our own ground truth data, we may not need to do these necessarily.
-         int kernelIdx=distance(kernels.begin(), kernelsIterator);
-         int scalediv=1;
-         if(kernelIdx == kernels.size()-1)
-            scalediv=3;
-         int kernelWidth=kernelsIterator->GetPointer()->GetLargestPossibleRegion().GetSize()[0];
-         convolvedImg=DivideImageByConstant(convolvedImg,scalediv*std::pow(kernelWidth,3));
-
-         if(kernelIdx >= 2 && kernelIdx <= 7)
-            convolvedImg=AddImageToImage(convolvedImg,patch,false);
-         else if(kernelIdx >= 8 && kernelIdx <= 13)
-            convolvedImg=AddImageToImage(convolvedImg,patch,true);
-      //
-      WriteImageFeatureVectorToFile(convolvedImg,false,outputFilename);
-   }//end of iterating through kernels list
-
-   //writing the "classLabel at the end of the 'feature vector' row.
-   std::ofstream featuresFile;
-   featuresFile.open(outputFilename,std::ios::app);
-   featuresFile << classLabel << ",";
-   featuresFile.close();
-}//end of CreatePatchFeatureVector()
-*/
-
 ImagePointer MultiplyTwoImages(ImagePointer input1,ImagePointer input2)
 {
    //Note: Pixel-wise multiplication of two images
@@ -2943,16 +2807,29 @@ Mat getLocationVector(ImagePointer WMModStripImg)
 			
 			
 			ImageType::IndexType tempIndex = inputIterator.GetIndex();
+			double acc = 0.0;
+			double neighbourhood_mean = 0.0;
+			int non_zero = 0;
+			int c = (inputIterator.Size());
 			
-			
-				float accum = 0.0;
-				for (unsigned int i = 0; i < inputIterator.Size(); ++i)
-				{    
-					accum += inputIterator.GetPixel(i);  
+			for(int i=0; i<c; i++){		
+				double temp  = inputIterator.GetPixel(i);
+				
+				if(i != (c/2))
+				{
+					acc += temp;
+					if(temp>0){++non_zero;}
 				}
-				Temp.at<float>(0,1)=(accum/(float)(inputIterator.Size()));
 			
-			
+			}	
+			if(non_zero == 0) {
+				neighbourhood_mean = 0.0;
+			}else{
+				neighbourhood_mean = acc/non_zero;
+			}
+				
+			Temp.at<float>(0,1)=neighbourhood_mean;
+					
 			
 			
 			Temp.at<float>(0,2)=tempIndex[0];
