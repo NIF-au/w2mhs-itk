@@ -16,7 +16,7 @@
 /*
  * 
  * additional edits by andrew jones
- * andrewthomasjones@gmail.com
+ * andrewthomasjones@gmail.comInterp3
  * 2016
  * main changes:
  * input arg structure changed
@@ -51,12 +51,14 @@
 #include "itkPowImageFilter.h"
 #include "itkBinaryBallStructuringElement.h"
 #include "itkBinaryDilateImageFilter.h"
-#include "itkNeighborhoodOperator.h"
 #include "itkMRFImageFilter.h"
 #include "itkMinimumDecisionRule.h"
 #include "itkDistanceToCentroidMembershipFunction.h"
 #include "itkManhattanDistanceMetric.h"
 #include "itkEuclideanDistanceMetric.h"
+#include "itkComposeImageFilter.h"
+#include "itkRescaleIntensityImageFilter.h"
+#include "itkVectorImageToImageAdaptor.h"
 //MISC
 #include "array"
 #include "iostream"
@@ -164,6 +166,7 @@ std::string renamer(std::string baseName, std::string suffix);
 vecPair fitTdist(std::vector<double> y, std::vector<double> zeros,  double tol, int max_iter, double a, double b);
 vecPair fitMest(std::vector<double> y, std::vector<double> zeros,  double tol, int max_iter);
 
+ImagePointer doMRF(ImagePointer inputImage, ImagePointer labelImage, unsigned int numberOfClasses, double smoothingFactor, std::array<double,2> meanarray, int max_iter, double tol);
 
 //math functions
 double phi(double d);
@@ -199,7 +202,12 @@ double df_eq_func::getSumV()
 
 //class MembershipFunctionThreshold
 
-
+struct processedImage {
+    ImagePointer normalised;
+    ImagePointer labels;
+    double mean;
+};
+processedImage  standardizeWMH(ImagePointer WMModStripImg, std::string SegOutFilename, int min_neighbour, double out_thresh_const, int max_iter, double tol);
 
 
 
@@ -281,7 +289,7 @@ int main(int argc, char *argv[])
 				("pmap,p", value< vector<string> >() , "pmap output  filename")
 				("seg,s", value< vector<string> >() , "Segmentation ouput filename")
 				
-				("z", value<int>()->default_value(1), "test mode --z 0 ")
+				("test_flag,z", value<int>()->default_value(1), "test mode --z 0 ")
 				
 				("train,t", value< vector<string> >() , "training filename")
 				("sample", value<int>(), "Number of training samples")
@@ -300,9 +308,9 @@ int main(int argc, char *argv[])
 			}
 			
 			//mode flags
-			if (vm.count("z")){
+			if (vm.count("test_flag")){
 				
-				mode = vm["z"].as<int>();
+				mode = vm["test_flag"].as<int>();
 								
 				if(mode==0){
 					testFlag= true;
@@ -458,20 +466,33 @@ int main(int argc, char *argv[])
 		if(testFlag)
 		{
 			
-			ImagePointer RFSegOutImage,RFSegOutImage2;  
+			ImagePointer SegOutImage,labels;  
 			ImagePointer inNifti = NiftiReader(WMStrippedFilename); 
 					
 			std::cout<< "p_thresh_const :  " << p_thresh_const  << std::endl;
 			std::cout<< "d_thresh_const :  " << d_thresh_const  << std::endl;
 			std::cout<< "min_neighbour :  " << min_neighbours  << std::endl;
     			
-			RFSegOutImage=ClassifyWMHsT(inNifti, segOutFilename,  min_neighbours,  p_thresh_const, a, b);
-			RFSegOutImage2=ClassifyWMHsM(inNifti, segOutFilename,  min_neighbours,  d_thresh_const, 100, 0.01);
+			//RFSegOutImage=ClassifyWMHsT(inNifti, segOutFilename,  min_neighbours,  p_thresh_const, a, b);
+			processedImage result = standardizeWMH(inNifti, segOutFilename,  min_neighbours,  d_thresh_const, 100, 0.01);
+			labels = result.labels;
+			std::array<double,2> means;
 			
-			QuantifyWMHs(0.0, RFSegOutImage, ventricleBinFilename, quantResultFilename);
-			QuantifyWMHs(0.0, RFSegOutImage2, ventricleBinFilename, quantResultFilename);
+			means[0] = 0.0;
+			means[1]= result.mean;
 			
-			std::cout << " done" <<std::endl;
+			ImagePointer stdImg = result.normalised; //NiftiReader(segOutFilename);  
+			NiftiWriter(stdImg, segOutFilename);
+			//ImagePointer doMRF(ImagePointer inputImage, ImagePointer labelImage, unsigned int numberOfClasses, double smoothingFactor, std::array<double,2> meanarray, int max_iter, double tol);
+			SegOutImage=doMRF(stdImg,labels, 2, 1.0, means, 10, 1e-7);
+			
+			//QuantifyWMHs(0.0, RFSegOutImage, ventricleBinFilename, quantResultFilename);
+			//QuantifyWMHs(0.0, RFSegOutImage2, ventricleBinFilename, quantResultFilename);
+			
+			NiftiWriter(SegOutImage, segOutFilename);
+			
+			
+			std::cout << " done" << std::endl;
 		
 			return 0;
 		}
@@ -554,33 +575,20 @@ int main(int argc, char *argv[])
 	
 	if(MFlag){
 			
-			ImagePointer RFSegOutImageM; 
+			ImagePointer RFSegOutImageM,SegOutImage; 
 			
-			//~ ImagePointer RFSegOutImageM2; 
-			//~ ImagePointer RFSegOutImageM3;  
-			//~ ImagePointer RFSegOutImageM4; 
-			//~ ImagePointer RFSegOutImageM5; 
+			 
 			
 			ImagePointer inNifti = NiftiReader(WMStrippedFilename); 
 			
 			//for testing sensitivty
 			std::string quantResultFilenameM = renamer(quantResultFilename, "_m");
-			//~ std::string quantResultFilenameM2 = renamer(quantResultFilename, "_m2");	
-			//~ std::string quantResultFilenameM3 = renamer(quantResultFilename, "_m3");	
-			//~ std::string quantResultFilenameM4 = renamer(quantResultFilename, "_m4");	
-			//~ std::string quantResultFilenameM5 = renamer(quantResultFilename, "_m5");
+			std::string quantResultFilenameMRF = renamer(quantResultFilename, "_mrf");
+			std::string segOutFilenameM = renamer(segOutFilename, "_m");
+			std::string segOutFilenameMRF = renamer(segOutFilename, "_mrf");	
 			
-			//~ double  d_thresh_const2 = d_thresh_const + 0.05;
-			//~ double  d_thresh_const3 = d_thresh_const + 0.10;
-			//~ double  d_thresh_const4 = d_thresh_const + 0.15;
-			//~ double  d_thresh_const5 = d_thresh_const + 0.20;
-			
-				
-			//~ std::string segOutFilenameM2 = renamer(segOutFilename, "_m2");	
-			//~ std::string segOutFilenameM3= renamer(segOutFilename, "_m3");	
-			//~ std::string segOutFilenameM4 = renamer(segOutFilename, "_m4");	
-			//~ std::string segOutFilenameM5 = renamer(segOutFilename, "_m5");	
-			std::string segOutFilenameM = renamer(segOutFilename, "_m");	
+			std::string segOutFilenameL = renamer(segOutFilename, "_label");	
+			std::string segOutFilenameN = renamer(segOutFilename, "_norm");	
 			
 			std::cout<< "M-estimator model"  << std::endl;
 			std::cout<< "quant :  " << quantResultFilenameM  << std::endl;
@@ -588,26 +596,57 @@ int main(int argc, char *argv[])
 											
 			std::cout<< "d_thresh_const :  " << d_thresh_const  << std::endl;
 			std::cout<< "min_neighbour :  " << min_neighbours  << std::endl;
-    			
-			
-			//~ 
-			//~ RFSegOutImageM2=ClassifyWMHsM(inNifti, segOutFilenameM2,  min_neighbours,  d_thresh_const2, 100, 0.0001);
-			//~ QuantifyWMHs(0.0, RFSegOutImageM2, ventricleBinFilename, quantResultFilenameM2);
-			//~ 
-			//~ RFSegOutImageM3=ClassifyWMHsM(inNifti, segOutFilenameM3,  min_neighbours,  d_thresh_const3, 100, 0.0001);
-			//~ QuantifyWMHs(0.0, RFSegOutImageM3, ventricleBinFilename, quantResultFilenameM3);
-			//~ 
-			//~ RFSegOutImageM4=ClassifyWMHsM(inNifti, segOutFilenameM4,  min_neighbours,  d_thresh_const4, 100, 0.0001);
-			//~ QuantifyWMHs(0.0, RFSegOutImageM4, ventricleBinFilename, quantResultFilenameM4);
-			//~ 
-			//~ RFSegOutImageM5=ClassifyWMHsM(inNifti, segOutFilenameM5,  min_neighbours,  d_thresh_const5, 100, 0.0001);
-			//~ QuantifyWMHs(0.0, RFSegOutImageM5, ventricleBinFilename, quantResultFilenameM5);
+    				
 			
 			//RFSegOutImage=ClassifyWMHsT(inNifti, segOutFilename,  min_neighbours,  p_thresh_const, a, b);
+			
 			RFSegOutImageM=ClassifyWMHsM(inNifti, segOutFilenameM,  min_neighbours,  d_thresh_const, 100, 0.0001);
 			QuantifyWMHs(0.0, RFSegOutImageM, ventricleBinFilename, quantResultFilenameM);
 			
 			
+			
+			std::cout<< "First model done ...  "  << std::endl;
+			
+			
+			//struct seems to interfere with ImagePointers, review.
+			//save temp files for now
+			processedImage result = standardizeWMH(inNifti, segOutFilename,  min_neighbours,  d_thresh_const, 100, 0.01);
+			std::cout<< "Normalising image ...  "  << std::endl;
+			//labels = result.labels;
+			std::array<double,2> means;
+			
+			means[0] = 0.0;
+			std::cout<< "mean:  " << result.mean << std::endl;
+			
+			means[1]= result.mean*2.0; //cutoff
+			
+			std::cout<< "cutoff:  " << means[1] << std::endl;
+			//ImagePointer stdImg = result.normalised; //NiftiReader(segOutFilename); 
+			
+			
+			//read in tempfiles
+			ImagePointer stdImg = NiftiReader(segOutFilenameN); 
+		    ImagePointer labels = NiftiReader(segOutFilenameL); 
+		
+		
+			
+			std::cout<< "Applying MRF ...  "   << std::endl;
+			SegOutImage=doMRF(stdImg, labels, 2, 1.0, means, 10, 1e-7);
+			std::cout<< "Saving results ...  "  << std::endl;
+			NiftiWriter(SegOutImage, segOutFilenameMRF);
+			
+			SegOutImage->SetDirection(inNifti->GetDirection());   //e.g. left-right Anterior-Posterior Sagittal-...
+			SegOutImage->SetSpacing(inNifti->GetSpacing());      //e.g. 2mm*2mm*2mm
+			SegOutImage->SetOrigin(inNifti->GetOrigin());
+			
+			
+			QuantifyWMHs(0.0, SegOutImage, ventricleBinFilename, quantResultFilenameMRF);
+			
+			//clean up temp files
+			std::remove(segOutFilenameN.c_str()); 
+			std::remove(segOutFilenameL.c_str()); 
+			
+			//QuantifyWMHs(0.0, RFSegOutImage2, ventricleBinFilename, quantResultFilename);	
 			//QuantifyWMHs(0.0, RFSegOutImage2, ventricleBinFilename, quantResultFilename);
 			
 			std::cout << "Done" <<std::endl;
@@ -1344,6 +1383,175 @@ ImagePointer ClassifyWMHsM(ImagePointer WMModStripImg, std::string rfSegOutFilen
 }//end of ClassifyWMHs()
 
 
+//FOR TEST: 'testingSamples' IS PASSED TO THIS METHOD ONLY WHEN TESTING & DEBUGGING. IN REAL CASES, THESE SAMPLES WILL BE EXTRACTED FROM THE INPUT IMAGES.
+//ImagePointer ClassifyWMHs(ImagePointer WMModStripImg,CvRTrees* RFRegressionModel, int featuresCount,char *rfSegOutFilename, Mat testingSamples)
+processedImage standardizeWMH(ImagePointer WMModStripImg, std::string SegOutFilename, int min_neighbour, double out_thresh_const, int max_iter=100, double tol = 0.0001)
+{
+
+	
+	std::cout << "Performing WMH standardization with M-estimator..." << std::endl;
+	
+	MarginateImage(WMModStripImg,5);                        
+	//Patch width is 5 voxels. Thus, a margin of size 5 voxels will be discarded to avoid any problems when doing image convolution with kernels.
+	// kept in to keep consistent with older RF model
+	
+	
+	//creating an output image (i.e. a segmentation image) out of the prediction results.
+	WMModStripImg->SetRequestedRegionToLargestPossibleRegion();
+	ImagePointer SegOutImage=ImageType::New();
+	
+	ImageType::IndexType outStartIdx;
+	outStartIdx.Fill(0);
+	
+	ImageType::SizeType outSize=WMModStripImg->GetLargestPossibleRegion().GetSize();
+	ImageType::RegionType outRegion;
+	outRegion.SetSize(outSize);
+	outRegion.SetIndex(outStartIdx);
+	
+	SegOutImage->SetRegions(outRegion);
+	SegOutImage->SetDirection(WMModStripImg->GetDirection());   //e.g. left-right Anterior-Posterior Sagittal-...
+	SegOutImage->SetSpacing(WMModStripImg->GetSpacing());      //e.g. 2mm*2mm*2mm
+	SegOutImage->SetOrigin(WMModStripImg->GetOrigin());
+	SegOutImage->Allocate();
+	
+	ImagePointer StdImage = ImageType::New();
+	
+	ImageType::IndexType StdImageStartIdx;
+	outStartIdx.Fill(0);
+	
+	ImageType::SizeType StdImageSize=WMModStripImg->GetLargestPossibleRegion().GetSize();
+	ImageType::RegionType StdImageRegion;
+	StdImageRegion.SetSize(StdImageSize);
+	StdImageRegion.SetIndex(StdImageStartIdx);
+	
+	StdImage->SetRegions(StdImageRegion);
+	StdImage->SetDirection(WMModStripImg->GetDirection());   //e.g. left-right Anterior-Posterior Sagittal-...
+	StdImage->SetSpacing(WMModStripImg->GetSpacing()); 
+	StdImage->SetOrigin(WMModStripImg->GetOrigin());
+	StdImage->Allocate();
+	     
+	NeighborhoodIteratorType::RadiusType radius;
+	radius.Fill(1);
+	
+	// set up iterators
+	itk::ImageRegionIterator<ImageType> SegOutIterator(SegOutImage, outRegion);
+	itk::ImageRegionIterator<ImageType> StdIterator(StdImage, StdImage->GetLargestPossibleRegion());	
+	NeighborhoodIteratorType inputIterator(radius, WMModStripImg, WMModStripImg->GetRequestedRegion());
+	
+	//initialise vectors
+	std::vector<double> y;
+	std::vector<double> zeros;
+	
+	//model fit
+	// robust fit normal dist with M estimator
+  	
+  	//put data into std::vector
+	while(!inputIterator.IsAtEnd())
+	{
+		y.push_back(inputIterator.GetCenterPixel());
+		if(inputIterator.GetCenterPixel()>0.0){
+			zeros.push_back(1.0);
+		}else{
+			zeros.push_back(0.0);
+		}
+		++inputIterator;
+	}
+	
+	
+	// fit model
+	vecPair model = fitMest(y, zeros,  tol, max_iter);
+		
+	double mu = model.second.at(1);
+	double sigma = model.second.at(0);   
+	
+	vector<double>::iterator it; 
+	
+    it=model.first.begin();
+    
+	//malahabnois dist cutoff as in van leemput 99
+	double outly = -2*std::log(out_thresh_const*std::sqrt(2*3.141593*sigma)); 
+    
+    
+   
+	inputIterator.GoToBegin();
+	int c = (inputIterator.Size());
+	int mid = (inputIterator.Size()) / 2;
+	
+	
+	
+	//main loop
+	
+   while(!inputIterator.IsAtEnd())
+   {
+		double acc = 0.0;
+		double neighbourhood_mean = 0.0;
+		int non_zero = 0;
+	  
+        	//get neighbourhood mean
+		for(int i=0; i<c; i++){		
+			double temp  = inputIterator.GetPixel(i); 
+			
+			if(i != (c/2))
+			{
+				acc += temp;
+				if(temp>0){++non_zero;}
+			}
+		
+		}	
+		
+		if(non_zero>0.){
+			neighbourhood_mean = acc/non_zero;			       
+        }else{
+			neighbourhood_mean = 0.;	
+		}
+           
+       
+         if(inputIterator.GetCenterPixel() > mu){
+		      StdIterator.Set((float) *it);
+		  }else{
+				StdIterator.Set((float) 0.0);
+		  }
+		 
+		 //if neighbourhood mean > mean and point above cut off set as on
+         if(neighbourhood_mean > mu & *it > outly){
+			SegOutIterator.Set(1.0);
+			
+			std::cout << "local mean " << neighbourhood_mean << " mean "<< mu << " dist "<< *it << " cutoff "<< outly  << std::endl;
+			
+			
+		 }else{
+			SegOutIterator.Set(0.0);
+		 }
+           
+		 ++StdIterator;	 
+		 ++SegOutIterator;
+		 ++inputIterator;
+		 it++;
+	}
+		
+  
+   //NiftiWriter(StdImage, SegOutFilename.c_str()); 
+   std::cout << "Done WMH segmentation successfully." << std::endl;
+   
+   
+
+   
+   processedImage returnValue;
+   returnValue.labels = SegOutImage;
+   returnValue.normalised = StdImage;
+   returnValue.mean = outly;
+   
+   
+   std::string segOutFilenameL = renamer(SegOutFilename, "_label");	
+   std::string segOutFilenameN = renamer(SegOutFilename, "_norm");	
+   
+   NiftiWriter(returnValue.normalised, segOutFilenameN);
+   NiftiWriter(returnValue.labels, segOutFilenameL );
+   
+   return returnValue;
+}//end of ClassifyWMHs()
+
+
 
 ImagePointer ClassifyWMHsMRF(ImagePointer WMModStripImg, std::string rfSegOutFilename, int min_neighbour, double out_thresh_const, int max_iter=100, double tol = 0.0001)
 {
@@ -1449,17 +1657,7 @@ ImagePointer ClassifyWMHsMRF(ImagePointer WMModStripImg, std::string rfSegOutFil
 	int numberOfClasses =2 ;
 	int numberOfIterations = 10;
 	double errTolMRF = 1e-7;
-	double smoothingFactor  = 2.0;
-	typedef itk::MRFImageFilter< ImageType, ImageType> MRFFilterType;
-	MRFFilterType::Pointer mrfFilter = MRFFilterType::New();
 	
-	
-	mrfFilter->SetInput( RFSegOutImage);
-	mrfFilter->SetNumberOfClasses( numberOfClasses );
-	mrfFilter->SetMaximumNumberOfIterations( numberOfIterations );
-	mrfFilter->SetErrorTolerance( errTolMRF  );
-	mrfFilter->SetSmoothingFactor( smoothingFactor );
-	mrfFilter->SetNeighborhoodRadius( 1 );
 	
 	std::vector< double > weights;
 	weights.push_back(0.5);
@@ -1472,44 +1670,18 @@ ImagePointer ClassifyWMHsMRF(ImagePointer WMModStripImg, std::string rfSegOutFil
 	weights.push_back(0.5);
 	weights.push_back(0.5);
 	  
-	mrfFilter->SetMRFNeighborhoodWeight( weights );
 	  
-	typedef MRFFilterType::OutputImageType ImageType;
+	  
+	  
+	  
+	  
+	  
+	  
+	  
+	  
+	  
 	
-	typedef itk::ImageClassifierBase< ImageType, ImageType >   SupervisedClassifierType;
-	SupervisedClassifierType::Pointer classifier = SupervisedClassifierType::New();
-	
-	typedef itk::Statistics::MinimumDecisionRule DecisionRuleType;
-	DecisionRuleType::Pointer  classifierDecisionRule = DecisionRuleType::New();
-	
-	classifier->SetDecisionRule( classifierDecisionRule.GetPointer() );
-	
-	typedef itk::Statistics::DistanceToCentroidMembershipFunction<std::vector < float > > MembershipFunctionType; 
-	typedef MembershipFunctionType::Pointer MembershipFunctionPointer;
-	//typedef itk::Statistics::ManhattanDistanceMetric< float > distanceMetricType;
-	
-	//distanceMetricType::New() distanceMetric;
-	//distanceMetric->SetOrigin(0.0);
-	
-	double meanDistance = 0;
-	MembershipFunctionType::CentroidType centroid(1);
-	
-		//~ 
-	//~ MembershipFunctionPointer membershipFunction0 =  MembershipFunctionType::New();
-	//~ //membershipFunction0->SetDistanceMetric(distanceMetric);
-	//~ centroid[0] = 0.0;
-	//~ membershipFunction0->SetCentroid( centroid );
-	//~ classifier->AddMembershipFunction( membershipFunction0 );
-		//~ 
-	//~ MembershipFunctionPointer membershipFunction1 =  MembershipFunctionType::New();
-	//~ //membershipFunction1->SetDistanceMetric(distanceMetric);
-	//~ centroid[0] = outly*2;
-	//~ membershipFunction1->SetCentroid( centroid );
-	//~ classifier->AddMembershipFunction( membershipFunction1 );
-		
-	mrfFilter->Update();
 	ImagePointer RFSegOutImage2=ImageType::New();
-	RFSegOutImage2 = mrfFilter->GetOutput();
 	
 	
 	NeighborhoodIteratorType RFSegOutIterator2(radius, RFSegOutImage2, outRegion);
@@ -1547,6 +1719,62 @@ ImagePointer ClassifyWMHsMRF(ImagePointer WMModStripImg, std::string rfSegOutFil
 }//end of ClassifyWMHs()
 
 
+ImagePointer doMRF(ImagePointer inputImage, ImagePointer labelImage, unsigned int numberOfClasses, double smoothingFactor, std::array<double,2> meanarray, int max_iter=100, double tol = 1e-7){
+
+	typedef itk::FixedArray<float,1>  ArrayPixelType;
+	typedef itk::Image< ArrayPixelType, 3 > ArrayImageType;
+	typedef itk::ComposeImageFilter<  ImageType, ArrayImageType > ScalarToArrayFilterType;
+	
+	ScalarToArrayFilterType::Pointer 	scalarToArrayFilter = ScalarToArrayFilterType::New();
+	scalarToArrayFilter->SetInput( inputImage );
+	
+	typedef itk::MRFImageFilter< ArrayImageType, ImageType > MRFFilterType;
+	MRFFilterType::Pointer mrfFilter = MRFFilterType::New();
+	//scalarToArrayFilter ->Update();
+	mrfFilter->SetInput( scalarToArrayFilter->GetOutput() );
+	mrfFilter->SetNumberOfClasses( numberOfClasses );
+	mrfFilter->SetMaximumNumberOfIterations( max_iter );
+	mrfFilter->SetErrorTolerance( tol );
+	mrfFilter->SetSmoothingFactor( smoothingFactor );
+	mrfFilter->SetNeighborhoodRadius( 1 );
+	
+	typedef itk::ImageClassifierBase< ArrayImageType, ImageType >   SupervisedClassifierType;
+	SupervisedClassifierType::Pointer classifier =  SupervisedClassifierType::New();
+	
+	typedef itk::Statistics::MinimumDecisionRule DecisionRuleType;
+	DecisionRuleType::Pointer  classifierDecisionRule = DecisionRuleType::New();
+	classifier->SetDecisionRule( classifierDecisionRule.GetPointer() );
+	
+	typedef itk::Statistics::DistanceToCentroidMembershipFunction<ArrayPixelType > MembershipFunctionType;
+	typedef MembershipFunctionType::Pointer MembershipFunctionPointer;
+	double meanDistance = 0;
+	MembershipFunctionType::CentroidType centroid(1);
+	
+	for(unsigned int i=0; i < numberOfClasses; i++ )
+	{
+		MembershipFunctionPointer membershipFunction = MembershipFunctionType::New();
+		centroid[0] = meanarray[i];
+		membershipFunction->SetCentroid( centroid );
+		classifier->AddMembershipFunction( membershipFunction );
+	}
+		
+	
+	static const double arr[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,13.5,1,1,1,1,1,1,1,1,1,1,1,1,1}; //weighting
+	std::vector< double > weights(arr, arr + sizeof(arr) / sizeof(arr[0]) );
+	mrfFilter->SetMRFNeighborhoodWeight( weights );
+	mrfFilter->SetClassifier( classifier );
+	
+	
+	
+	typedef MRFFilterType::OutputImageType  OutputImageType;
+	OutputImageType::Pointer  OutputImage = OutputImageType::New();
+	OutputImage = mrfFilter->GetOutput();
+	OutputImage->SetDirection(inputImage->GetDirection());   //e.g. left-right Anterior-Posterior Sagittal-...
+	OutputImage->SetSpacing(inputImage->GetSpacing());      //e.g. 2mm*2mm*2mm
+	OutputImage->SetOrigin(inputImage->GetOrigin());
+	OutputImage->Update();
+	return OutputImage;
+}
 
 vecPair fitMest(std::vector<double> y, std::vector<double> zeros,  double tol, int max_iter){
 
